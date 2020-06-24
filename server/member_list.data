@@ -1,0 +1,8 @@
+{
+"Team": {"email":"team-email-id@xyz.com"},
+"GroupID1": {"gid":"ABC000000012345","wo":1,"inc":1,"tas":1,"crq":0},
+"GroupID2": {"gid":"ABC000000012346","wo":1,"inc":1,"tas":0,"crq":1},
+"GroupID3": {},
+"firstname1": {"lanid":"domain\\\\name1","email":"name1@xyz.com"},
+"firstname2": {"lanid":"domain\\\\name2","email":"name2@xyz.com"}
+}

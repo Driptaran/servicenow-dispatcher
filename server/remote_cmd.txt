@@ -1,0 +1,114 @@
+#			Intro
+
+Write-Host -ForegroundColor Magenta "*****************************************************************************************************************"
+Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t    "
+Write-Host -NoNewline -ForegroundColor Green "Dispatcher Remote Access`t`t`t`t`t`t"
+Write-Host -ForegroundColor Magenta "*"
+Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t`t"
+Write-Host -NoNewline -ForegroundColor Green "Author: Driptaran`t`t`t`t`t`t"
+Write-Host -ForegroundColor Magenta "*"
+Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t`t"
+Write-Host -NoNewline -ForegroundColor Cyan "Version : P1.3`t`t`t`t`t`t`t"
+Write-Host -ForegroundColor Magenta "*"
+Write-Host -ForegroundColor Magenta "*****************************************************************************************************************"
+Write-Host -ForegroundColor Yellow "`nType #help to get a list of all the commands anytime...`n`n`t`t"
+
+#	=================================================================================================================
+
+$team=Get-Content "$pwd\cache\team.txt"
+$domain = "https://location.of.server.dispatcher.files/$team"
+
+$total_mem = irm -Uri "$domain/member_list.data" -Method GET -UseDefaultCredentials
+$id = whoami
+$id = $id -replace('\\','\\')
+$name = ($total_mem.psobject.properties | where {$_.value.lanid -eq $id }).name
+$myip = ((ipconfig) -match 'IPv4').split(':')[1].trim()
+iwr -Uri "$domain/HandShake" -Method PUT -Body $myip -ContentType "application/text" -UseDefaultCredentials | Out-Null
+
+Write-Host -NoNewline "User detected: "
+Write-Host -ForegroundColor Green $name
+
+$rstatus = irm -Uri "$domain/status.txt" -Method GET -UseDefaultCredentials
+$dname = $rstatus.split('|')[0]
+$dip = $rstatus.split('|')[3]
+If($dname -ne $null)
+{
+	$curtime = [int64](([datetime]::UtcNow)-(get-date "1/1/1970")).TotalSeconds
+	$rtime = [int64]($rstatus.split('|')[1])
+	if(($curtime-$rtime) -gt 600)
+	{
+		Write-Host -ForegroundColor Yellow "Sorry!!! Nobody is running the script."
+		sleep 4
+		exit
+	}
+	if($total_mem.$dname -eq $null)
+	{
+		Write-Host -ForegroundColor Red "$dname is running the script but could not find his info in the database!"
+		sleep 4
+		exit
+	}else
+	{
+		$demail = $total_mem.$dname.email
+		Write-Host -NoNewline "`nDispatcher detected: "
+		Write-Host -ForegroundColor Green "$dname`n`n"
+	}
+}else
+{
+	Write-Host -ForegroundColor Yellow "Sorry!!! Nobody is running the script."
+	sleep 4
+	exit
+}
+
+$port = 2021
+Write-Host -ForegroundColor Yellow -NoNewline "Trying to pair with the dispatcher..."
+$client = new-object net.sockets.udpclient($port)
+$send = [text.encoding]::ascii.getbytes('hello')
+[void] $client.send($send, $send.length, $dip, 2020)
+$client.Client.ReceiveTimeout = 30000
+$ipep = new-object net.ipendpoint([net.ipaddress]::any, 0)
+Try{
+	$receive = $client.receive([ref]$ipep)
+	$msg = [text.encoding]::ascii.getstring($receive)
+	if($msg -eq 'hi') { Write-Host -ForegroundColor Green "Success!" }
+}
+Catch
+{
+	Write-Host -ForegroundColor Red "Failed!"
+	$client.close()
+	sleep 3
+	exit
+}
+
+$loop = $true
+
+while($loop)
+{
+	$cmd = Read-Host "Please enter a command"
+	if($cmd -eq '#help')
+	{
+		Write-Host -ForegroundColor Magenta "Coming soon!!!"
+		continue
+	}
+	elseif('exit','quit' -contains $cmd )
+	{
+		echo "Bye bye..."
+		$client.close()
+		sleep 3
+		exit
+	}
+	Write-Host -NoNewline -ForegroundColor Yellow "Remote command sent to dispatcher $dname : "
+	Write-Host -ForegroundColor Green "$cmd"	
+	$cmd=$name+':'+$cmd
+	$send = [text.encoding]::ascii.getbytes($cmd)
+	[void]$client.send($send, $send.length, $dip, 2020)
+	Write-Host "Waiting for response...`n"
+	Try
+	{
+		$receive = $client.receive([ref]$ipep)
+		Write-Host ([text.encoding]::ascii.getstring($receive))
+	}
+	Catch
+	{
+		Write-Host -ForegroundColor Red "Sorry! No response received!!!"
+	}
+}

@@ -1,0 +1,119 @@
+#	Configuration script
+#	Version: 1.3
+
+$team=Get-Content "$pwd\cache\team.txt"
+
+$domain = "https://location.of.server.dispatcher.files/$team"
+
+function sendMail($id,$sub,$body)
+{
+	$Outlook=New-Object -ComObject Outlook.Application
+	$Mail=$Outlook.CreateItem(0)
+	$Mail.to=$id
+	$Mail.Subject=$sub
+	$Mail.Body=$body
+	$Mail.Send()
+	[System.Runtime.Interopservices.Marshal]::ReleaseComObject($Outlook) | Out-Null
+}
+
+Write-Host -NoNewLine -ForeGroundColor Green "Initializing...`r"
+
+iwr -Uri "$domain/remote_cmd.txt" -Method GET -UseDefaultCredentials -OutFile "$pwd\remote_cmd.ps1"
+
+If(![System.IO.File]::Exists("$pwd\cache\first"))
+{
+	Write-Host -NoNewLine -ForeGroundColor Yellow "Hey there...`r"
+	iwr -Uri "$domain/Error reporting.oft" -Method GET -UseDefaultCredentials -OutFile "$pwd\Error reporting.oft"
+	sleep 2
+	Write-Host -NoNewLine -ForeGroundColor Green "Installing the tool for the first time!!!`r"
+	sleep 3
+	iwr -Uri "$domain/Documentation.docx" -Method GET -UseDefaultCredentials -OutFile "$pwd\Documentation.docx"
+	Write-Host -ForeGroundColor Magenta "I hope you've read the documentation. I'll guide you through the installation if you haven't done already."
+	
+	$word = New-Object -ComObject "Word.Application"
+	$word.Visible = $true
+	$myFile = "$pwd\Documentation.docx"
+	$word.Application.Documents.open($myFile) | Out-Null
+	
+	If(![System.IO.File]::Exists("$pwd\ticket_exceptions.txt")) { New-Item -path $pwd -name "ticket_exceptions.txt" -type "file" | Out-Null }
+	If(![System.IO.File]::Exists("$pwd\cache\status")) { New-Item -path "$pwd\cache" -name "status" -type "file" | Out-Null }
+	
+	New-Item -path "$pwd\cache" -name "first" -type "file" | Out-Null
+	
+	Write-Host "Final step:Please update ticket_exceptions file when required!"
+	sleep 4
+}
+
+#	Tmp section	=====================================================
+
+#====================================================================
+
+#	Updates	=======================================================
+$ver = iwr -Uri "$domain/version.txt" -Method GET -UseDefaultCredentials
+$ver= $ver.Content
+$lver = Get-Content "$pwd\cache\version"
+if($ver -ne $lver)
+{
+#========Documentation update
+#	iwr -Uri "$domain/Documentation.docx" -Method GET -UseDefaultCredentials -OutFile "$pwd\Documentation.docx"
+#============================
+	$wsh = New-Object -ComObject Wscript.Shell
+	$popmsg = irm -Uri "$domain/Updatemsg.txt" -Method GET -UseDefaultCredentials
+	$wsh.Popup($popmsg,0,"Update details",0) | Out-Null
+	Set-Content "$pwd\cache\version" $ver
+}
+#======================================================================
+
+#		Check current status	========================================================
+
+$total_mem = irm -Uri "$domain/member_list.data" -Method GET -UseDefaultCredentials
+$id = whoami
+$id = $id -replace('\\','\\')
+$name = ($total_mem.psobject.properties | where {$_.value.lanid -eq $id }).name
+$curtime = [int64](([datetime]::UtcNow)-(get-date "1/1/1970")).TotalSeconds
+$rstatus = iwr -Uri "$domain/status.txt" -Method GET -UseDefaultCredentials
+$rstatus = $rstatus.Content
+if($rstatus.split('|')[0] -ne $null -And $rstatus.split('|')[0] -ne $name)
+{
+	$rname = $rstatus.split('|')[0]
+	$rtime = [int64]($rstatus.split('|')[1])
+	if(($curtime-$rtime) -lt 600)
+	{
+		Write-Host -ForeGroundColor Magenta -NoNewLine "The script is currently being run by "
+		Write-Host -ForeGroundColor Green $rname
+		$choice = Read-Host "Do you want to override?(y/n)"
+		if($choice -eq 'y') { Write-Host -ForeGroundColor Green "Overriding $rname !!!" }
+		elseif($choice -eq 's') { $mode = 'silent' }
+		else
+		{
+			Write-Host "Bye bye!!!"
+			sleep 5
+			exit
+		}
+	}
+}
+
+#	Personal info:
+
+if($name -eq $null)
+{
+	Write-Host -NoNewLine -ForeGroundColor Magenta "`nHello "
+	Write-Host -ForeGroundColor Green "$name`n"
+}
+
+#	====================================================================================
+
+if((Get-Content "$pwd\cache\status") -eq 'stop' -And $mode -ne 'silent')
+{
+	Clear-Content "$pwd\cache\status"
+	$tmp = irm -Uri "$domain/member_list.data" -Method GET -UseDefaultCredentials
+	$tmail = $tmp.Team.Email
+	sendMail -id $tmail -sub 'Script Alert' -body "Hi all,`nI have started the dispatcher script!"
+}
+
+do
+{
+	clear
+	$code = irm -Uri "$domain/Main.txt" -Method GET -UseDefaultCredentials
+	$tmp = Invoke-Expression $code
+}while($tmp -eq 'restart')

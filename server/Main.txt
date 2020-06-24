@@ -1,0 +1,833 @@
+#			Intro
+
+Write-Host -ForegroundColor Magenta "*****************************************************************************************************************"
+Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t    "
+Write-Host -NoNewline -ForegroundColor Green "Dispatcher Script For Generic`t`t`t`t`t`t"
+Write-Host -ForegroundColor Magenta "*"
+Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t`t"
+Write-Host -NoNewline -ForegroundColor Green "Author: Driptaran`t`t`t`t`t`t"
+Write-Host -ForegroundColor Magenta "*"
+Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t`t"
+Write-Host -NoNewline -ForegroundColor Cyan "Version : G3.6`t`t`t`t`t`t`t"
+Write-Host -ForegroundColor Magenta "*"
+Write-Host -ForegroundColor Magenta "*****************************************************************************************************************"
+
+#	=================================================================================================================
+
+Add-Type -AssemblyName Microsoft.VisualBasic
+
+$debug = 1
+
+$team=Get-Content "$pwd\cache\team.txt"
+$tktapi = "URL of Ticket API"
+$domain = "https://url.for.server.dispatcher.files/$team"
+$roster = "https://url.for.server.roster.files/$team"
+$memlist = irm -Uri "$domain/member_list.data" -Method GET -UseDefaultCredentials
+$groups = ($memlist.GroupID1.gid,$memlist.GroupID2.gid,$memlist.GroupID3.gid)
+
+Write-Host -NoNewline -ForegroundColor Yellow "`n`nGetting current user:"
+$id = whoami
+$id = $id -replace('\\','\\')
+if($debug -eq 2) { Add-Content "$pwd\cache\debug_$debug.txt" "User lan fetched: $id"}
+$uname = ($memlist.psobject.properties | where {$_.value.lanid -eq $id }).name
+Write-Host -ForegroundColor Green "$uname"
+
+
+#+++++++++++++++++++++++++++++++++++++++		Assign Function			+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function assign($tid,$aname,$typ)
+{
+	$aid = $memlist.$aname.lanid
+	if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "In Assign::Ticket ID: $tid; Assignee: $aid, Name: $aname" }
+#Decide Type
+	if(($tid.length -eq 15) -And ($aid -ne $null))
+	{
+		if ($tid.StartsWith("WO")){
+			$type = "workorder"
+			$atype = "Assignee"
+		}elseif ($tid.StartsWith("IN")){
+			$type = "incident"
+			$atype = "Assignee"
+		}elseif ($tid.StartsWith("TAS")){
+			$type = "task"
+			$atype = "Assignee"
+		}elseif ($tid.StartsWith("CRQ")){
+			$type = "change"
+			$atype = "Change_Coordinator"
+		}
+#------------
+#Query and assign ticket
+		$tdata = iwr -Uri "https://ticket.na.xom.com/api/$type/$tid" -Method GET -UseDefaultCredentials
+		$cont = $tdata | ConvertFrom-Json
+		if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "In assign:: Before filter: $groups, $tmp" }
+		if ($tdata.StatusCode -eq 200 -And ($groups -contains $cont.$atype.Group_ID))
+		{
+			$gid = $cont.$atype.Group_ID
+			if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "Going to assign:: Ticket: $tid,Type: $type,Assignee: $aname,Group: $gid." }
+			if($type -eq "change"){ $param = "{`"Coordinator`": `"$aid`",`"Coordinator_Group`": `"$gid`"}" }
+			else{ $param = "{`"Assignee`": `"$aid`",`"Assignee_Group`": `"$gid`"}" }
+			$res = iwr -Uri "https://ticket.na.xom.com/api/$type/$tid/reassign" -Method PUT -Body $param -ContentType "application/json" -UseDefaultCredentials
+			if($debug -gt 1) { Add-Content "$pwd\cache\debug_$debug.txt" "Assign response data: $res" }
+#----------------------
+#If success, Give message and send mail
+			if($res.StatusCode -ne 200) { return -2 }
+			$time = Get-Date -Format HH:mm
+			$ftime = Get-Date
+			if($typ -eq 'reassign') { Write-Host -NoNewline "Re-assigned ticket: " }
+			elseif($typ -eq 'dispatch') { Write-Host -NoNewline "Dispatched ticket: " }
+			elseif($typ -eq 'related') { Write-Host -NoNewline "Assigned Related ticket: " }
+			else { Write-Host -NoNewline "Assigned ticket: " }
+			Write-Host -NoNewline -ForegroundColor Green $tid
+			Write-Host -NoNewline " to: "
+			Write-Host -NoNewline -ForegroundColor Green $aname
+			Write-Host " at $time."
+			$priority = $cont.Priority
+			if('Critical','High' -contains $priority)
+			{
+				$sub = "$priority priority ticket Alert!!!"
+				$sum = $cont.Summary
+				$to = $memlist.$aname.email
+				$body = "Hi $aname ,`n You have been assigned a $priority priority ticket: $tid .`nSummary: $sum .`n Please check at your convenience. Thanks."
+				SendMail -to $to -sub $sub -body $body
+				Write-Host -ForegroundColor Cyan "Alert sent: $priority priority..."
+			}
+#--------------------------------------
+#Update Log
+			if($typ -eq 'reassign') { $locvar = "reassigned" }
+			elseif($typ -eq 'dispatch') { $locvar = "dispatched" }
+			elseif($typ -eq 'related') { $locvar = "assigned(related)" }
+			else { $locvar = "assigned" }
+			Add-Content "$pwd\Ticket_log.txt" "$ftime :: $tid $locvar to : $aname"
+			$tlog = iwr -Uri "$domain/Ticket_log.txt" -Method GET -UseDefaultCredentials
+			[int]$tstat = $tlog.StatusCode
+			$tlog = $tlog.Content + "`n$ftime :: $tid $locvar to : $aname"
+			if($tstat -eq 200){ iwr -Uri "$domain/Ticket_log.txt" -Method PUT -Body $tlog -ContentType "application/text" -UseDefaultCredentials | Out-Null }
+#-------------
+			return $res.StatusCode
+		}else{
+			return -1
+		}
+	}
+}
+
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+#+++++++++++++++++++++++++++++++		Get Unassigned Tickets		+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function Get_Unassigned()
+{
+	$groupnames = ('GroupID1','GroupID2','GroupID3')
+	$unassignedTkts = [System.Collections.ArrayList]@()
+#Team based Specifications	===========================
+	function get_Tickets($gid,$typ)
+	{
+		if($typ -eq 'task') {$url = $tktapi+$typ+"/group/"+$gid+"?MinStatus=Assigned&MaxStatus=Assigned"}
+		elseif($typ -eq 'change') { $url = $tktapi+"change/group/"+$gid+"?MinStatus=Draft&MaxStatus=Planning%20In%20Progress" }
+		else {$url = $tktapi+$typ+"/group/"+$gid+"?MaxStatus=In%20Progress"}
+		$filteredtlist = irm -Uri $url -Method GET -UseDefaultCredentials
+		if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "Get unassigned:: Request URL: $url" }
+		return $filteredtlist
+	}
+#======================================================
+	function add_Data($rdata,$typ,$gid)
+	{
+		if ($typ -eq "workorder"){
+			$tid="Work_Order_ID"
+		}elseif ($typ -eq "incident"){
+			$tid="Incident_Number"
+		}elseif ($typ -eq "change"){
+			$tid="Change_ID"
+		}elseif ($typ -eq "task"){
+			$tid="Task_ID"
+		}
+		if($debug -gt 1)
+		{
+			$tdebdata = $null
+			foreach($i in $rdata) { $tdebdata+="$i.$tid ,"}
+			Add-Content "$pwd\cache\debug_$debug.txt" "Get unassigned(Unfiltered):: Tickets found: $tdebdata"
+			$tdebdata = $null
+		}
+#Basic filter for unassigned.	===================
+		foreach($ticket in $rdata)
+		{
+			if($typ -eq 'change')
+			{
+				$aid = $ticket.Change_Coordinator.ID
+				$agid = $ticket.Change_Coordinator.Group_ID
+			}else{
+				$aid = $ticket.Assignee.ID
+				$agid = $ticket.Assignee.Group_ID
+			}
+#Scope for team mod	=======================
+#==========================================
+		}
+		if($debug -gt 1)
+		{
+			Add-Content "$pwd\cache\debug_$debug.txt" "Get unassigned(Filtered):: Tickets found: $tdebdata,"
+			$tdebdata = $null
+		}
+	}
+	
+#Check ticket types according to memberlist file	===================================
+	foreach($gr in $groupnames)
+	{
+		if($memlist.$gr.wo -eq 1)
+		{
+			$rdata=get_Tickets -gid $memlist.$gr.gid -typ workorder
+			add_Data -rdata $rdata -typ workorder -gid $memlist.$gr.gid
+		}
+		if($memlist.$gr.inc -eq 1)
+		{
+			$rdata=get_Tickets -gid $memlist.$gr.gid -typ incident
+			add_Data -rdata $rdata -typ incident -gid $memlist.$gr.gid
+		}
+		if($memlist.$gr.tas -eq 1)
+		{
+			$rdata=get_Tickets -gid $memlist.$gr.gid -typ task
+			add_Data -rdata $rdata -typ task -gid $memlist.$gr.gid
+		}
+		if($memlist.$gr.crq -eq 1)
+		{
+			$rdata=get_Tickets -gid $memlist.$gr.gid -typ change
+			add_Data -rdata $rdata -typ change -gid $memlist.$gr.gid
+		}
+	}
+#===========================================================================================
+
+	return $unassignedTkts
+}
+
+
+#	Process Tickets 	++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function ProcessTickets($tickets)
+{
+	$ftime = Get-Date
+	$tickets = $tickets | sort @{Expression={$_.Submit_Date}}
+	foreach($ticket in $tickets)
+	{
+		if($ticket -eq $null){ continue }
+		if($ticket.Work_Order_ID -ne $null) { $ticketid = $ticket.Work_Order_ID }
+		elseif($ticket.Incident_Number -ne $null) { $ticketid = $ticket.Incident_Number }
+		elseif($ticket.Task_ID -ne $null) { $ticketid = $ticket.Task_ID }
+		else{ $ticketid = $ticket.Change_ID }
+		$ftime = Get-Date
+		if($t_exceptions -contains $ticketid)
+		{
+			Write-Host -NoNewline "Skipped $ticketid in exception list!!!           `r"
+			continue
+		}
+#Check for repeat	-------------------------------------
+#------------------------------------------------------------------
+		if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "Process Tickets:: Before assign: Assigning to = $curassignee" }
+		$res = assign -tid $ticketid -aname $curassignee
+		if($res -ne 200)
+		{
+			Write-Host -ForegroundColor Red "Failed to assign:" $ticketid
+		}
+		else
+		{
+			$tid = $members.IndexOf($curassignee)
+			$tid++
+			if($tid -eq $members.Count) { Set-Variable -Name id -Scope 1 -Value 0 }
+			else { Set-Variable -Name id -Scope 1 -Value $tid }
+			if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "Process Tickets:: After assign: Assigned to = $curassignee, Next ID= $id" }
+			Set-Variable -Name curassignee -Scope 1 -Value $members[$id]
+			Write-Host -ForegroundColor Yellow "`tNext assignee:" $curassignee
+		}
+	}
+	
+}
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+#		Monitors Remote commands		+++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function RemoteMon($data)
+{
+	function Reply($msg)
+	{
+		$server = new-object net.sockets.udpclient(2021)
+		$send = [text.encoding]::ascii.getbytes($msg)
+		[void]$server.send($send, $send.length, $ip, 2021)
+		$server.close()
+	}
+	$ip = $data.Split('|')[0]
+	if($data.Split('|')[1] -eq 'hello')
+	{
+		$rip = irm -Uri "$domain/HandShake" -Method GET -UseDefaultCredentials
+		if($rip -eq $ip -And $trusted.IndexOf($rip) -eq -1) { [void]$trusted.Add($ip) }
+		Reply('hi')
+		if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "Remote::Handshake: $rip and $ip" }
+		iwr -Uri "$domain/HandShake" -Method PUT -Body "" -ContentType "application/text" -UseDefaultCredentials | Out-Null
+	}
+	elseif($trusted -contains $ip)
+	{
+		$name = $data.Split('|')[1].Split(':')[0]
+		$cmd = $data.Split('|')[1].Split(':')[1]
+		Add-Content "$pwd\remote_command_logs.txt" "$time : $cmd from $name"
+		if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "Remote::Executing: $name and $cmd" }
+		if($memlist.$name.email -ne $null)
+		{
+			$cmdres = CommandExec -cmd $cmd -ip $ip
+			return $cmdres
+		}
+	}
+}
+
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+#		Send Mails	+++++++++++++++++++++++++++++++++++
+
+function SendMail($to,$sub,$body)
+{
+	$Outlook=New-Object -ComObject Outlook.Application
+	$Mail=$Outlook.CreateItem(0)
+	$Mail.to=$to
+	$Mail.Subject=$sub
+	$Mail.Body=$body
+	$Mail.Importance=2
+	$Mail.Send()
+	[System.Runtime.Interopservices.Marshal]::ReleaseComObject($Outlook) | Out-Null
+}
+
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+#		Monitors commands	++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function MonitorCommands()
+{
+	if ([console]::KeyAvailable)
+	{
+		$x = [System.Console]::ReadKey() 
+		if($x.key -eq 'F7')
+		{
+			$title = 'Command Window'
+			$msg   = 'Enter the command:'
+			$text = [Microsoft.VisualBasic.Interaction]::InputBox($msg, $title)
+			if($text -ne "")
+			{
+				$text = $text.Trim()
+				$cmdres = CommandExec -cmd $text
+				return $cmdres
+			}
+		}
+	}
+}
+
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+#Execute commands	+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function CommandExec($cmd,$ip,$scp)
+{
+	function Reply($msg)
+	{
+		$server = new-object net.sockets.udpclient(2021)
+		$send = [text.encoding]::ascii.getbytes($msg)
+		[void] $server.send($send, $send.length, $ip, 2021)
+		$server.close()
+	}
+	if($cmd -eq $null)
+	{
+		Write-Host -ForegroundColor Red "No commands received!!!"
+		return
+	}
+	if($cmd -eq "dispatch -d")
+	{
+		$msg = "Received Stop command. Dispatching will be stopped now!"
+		Write-Host -ForegroundColor Red $msg
+		$tdisloop = 51
+		Set-Variable -Name disloop -Scope 2 -Value $tdisloop
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd -eq "dispatch -e")
+	{ 
+		$msg = "Received Start command. Resuming dispatch!"
+		Write-Host -ForegroundColor Green $msg
+		$tdisloop = 2
+		Set-Variable -Name disloop -Scope 2 -Value $tdisloop
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd -eq "remotemon -d")
+	{
+		$msg = "Remote commands Monitor is disabled."
+		Write-Host -ForegroundColor Red $msg
+		Set-Variable -Name mailloop -Scope 2 -Value 51
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+		$commandmon | Stop-Job
+		Remove-Job -Job $commandmon
+		Set-Variable -Name commandmon -Scope 2 -Value $null
+	}
+	elseif($cmd -eq "remotemon -e")
+	{
+		$open = netstat -ano | findstr :2020
+		if($open -ne $null)
+		{
+			$open = $open -replace "\s+"," "
+			kill $open.Split(" ")[-1]
+		}
+		$commandmon = Start-Job -ScriptBlock {
+			$socket = New-Object System.Net.Sockets.UdpClient 2020
+			$endpoint = New-Object System.Net.IPEndPoint ([IPAddress]::Any, 2020)
+			while($true)
+			{
+				$content = $socket.Receive([ref]$endpoint)
+				$sender = $endpoint.Address.ToString()
+				$msg=[Text.Encoding]::ASCII.GetString($content)
+				echo "$sender|$msg"
+			}
+		}
+		Write-Host -ForegroundColor Green "Remote commands Monitor is enabled!!!"
+		Set-Variable -Name commandmon -Scope 2 -Value $commandmon
+	}
+	elseif($cmd -eq "next")
+	{
+		$total = $members.Count
+		$lid = $members.IndexOf($curassignee) + 1
+		if($lid -eq $total){
+			$lid = 0
+		}
+		if($scp -eq 3) { Set-Variable -Name curassignee -Scope 3 -Value $members[$lid] }
+		else{ Set-Variable -Name curassignee -Scope 2 -Value $members[$lid] }
+		Write-Host -NoNewline -ForegroundColor Yellow "Skipping current assignee!!!Next assignee: "
+		Write-Host -ForegroundColor Green $curassignee
+		$msg = "Skipping current assignee!!!Next assignee: $curassignee"
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd -eq "prev")
+	{
+		$total = $members.Count
+		$lid = $members.IndexOf($curassignee) - 1
+		if($lid -lt 0){
+			$lid = $total-1
+		}
+		Set-Variable -Name curassignee -Scope 2 -Value $members[$lid]
+		Write-Host -NoNewline -ForegroundColor Yellow "Getting previous assignee: "
+		Write-Host -ForegroundColor Green $curassignee
+		$msg = "Getting previous assignee: $curassignee"
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd.StartsWith('dispatch'))
+	{
+		$data = $cmd.Split(' ')
+		$tid = $data[1]
+		$aid = $data[3]
+		$aid = $aid.ToLower()
+		$aid = $aid.Substring(0,1).ToUpper()+$aid.Substring(1)
+		if($memlist.$aid -ne $null)
+		{
+			Write-Host -ForegroundColor Cyan -NoNewline "Dispatching ticket..."
+			$res=assign -tid $tid -aname $aid -typ dispatch
+			if($res -ne 200)
+			{
+				$msg = "Dispatch Unsuccessful for $tid!!!"
+				Write-Host -ForegroundColor Red $msg
+			}
+			else { $msg = "Successfully dispatched $tid to $aid" }
+		}else{
+			$msg = "No one with the name $aid found in the team!!!"
+			Write-Host -ForegroundColor Red $msg
+		}
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd.StartsWith('assign'))
+	{
+		$asgne = $cmd.Split(' ')[1]
+		if($members -contains $asgne)
+		{
+			$asgne = $asgne.ToLower()
+			$asgne = $asgne.Substring(0,1).ToUpper()+$asgne.Substring(1)
+			Set-Variable -Name curassignee -Scope 2 -Value $asgne
+			Write-Host -NoNewline -ForegroundColor Yellow "Assignee has been changed to : "
+			Write-Host -ForegroundColor Green $asgne
+			$msg = "Assignee has been changed to : $asgne"
+		}
+		else
+		{
+			$msg = "No match found with the name : $asgne"
+			Write-Host -ForegroundColor Red $msg
+		}
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd.StartsWith('reassign'))
+	{
+		$data = $cmd.Split(' ')
+		$tid = $data[1]
+		$aid = $data[3]
+		$aid = $aid.ToLower()
+		$aid = $aid.Substring(0,1).ToUpper()+$aid.Substring(1)
+		if($members.Contains($aid))
+		{
+			$res=assign -tid $tid -aname $aid -typ reassign
+			if($res -ne 200)
+			{
+				$msg = "Reassign Unsuccessful for $tid!!!"
+				Write-Host -ForegroundColor Red $msg
+			}
+			else { $msg = "Successfully reassign $tid to $aid" }
+		}else{
+			$msg = "No one with the name $aid found in current shift!!!"
+			Write-Host -ForegroundColor Red $msg
+		}
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd.StartsWith('remove'))
+	{
+		$asgne = $cmd.Split(' ')[1]
+		$asgne = $asgne.ToLower()
+		$asgne = $asgne.Substring(0,1).ToUpper()+$asgne.Substring(1)
+		if($members.Contains($asgne))
+		{
+			if($asgne -eq $curassignee) { CommandExec -cmd "next" -scp 3 }
+			[void]$members.Remove($asgne)
+			$msg = "$asgne has been removed from current dispatch list!!! Current list: "
+			foreach($mem in $members) { $msg+= "$mem " }
+			Write-Host -ForegroundColor Green $msg
+		}
+		else
+		{
+			$msg = "No match found with the name : $asgne"
+			Write-Host -ForegroundColor Red $msg
+		}
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd.StartsWith('add'))
+	{
+		$asgne = $cmd.Split(' ')[1]
+		$asgne = $asgne.ToLower()
+		$asgne = $asgne.Substring(0,1).ToUpper()+$asgne.Substring(1)
+		if($memlist.$asgne -ne $null)
+		{
+			if($members.Contains($asgne))
+			{
+				$msg = "$asgne is already in current dispatch list!"
+				Write-Host -ForegroundColor Red $msg
+			}
+			else
+			{
+				if($m_exceptions -contains $asgne)
+				{
+					Write-Host -ForegroundColor Red "Sorry! This member is in exception list. Please remove from there."
+					if($ip -ne $null)
+					{
+						Reply($msg)
+					}
+					return
+				}
+				[void]$members.Add($asgne)
+				$members.Sort()
+				$msg = "$asgne has been added to the current dispatch list!!! Current list: "
+				foreach($mem in $members) { $msg+= "$mem " }
+				Write-Host -ForegroundColor Green $msg
+				Set-Variable -Name members -Scope 2 -Value $members
+			}
+		}
+		else
+		{
+			$msg = "No match found with the name : $asgne"
+			Write-Host -ForegroundColor Red $msg
+		}
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+	elseif($cmd -eq "quit" -Or $cmd -eq "exit")
+	{
+		$mailid = $memlist.Team.email
+		Set-Content "$pwd\cache\status" "stop"
+		Write-Host -ForegroundColor Magenta "Stopping the script and doing clean-up. May take a minute or two. You can minimize the window."
+		SendMail -to $mailid -sub "Script alert" -body "I have stopped the dispatcher script!!!"
+		if($commandmon -ne $null)
+		{
+			$commandmon | Stop-Job
+			Remove-Job -Job $commandmon
+		}
+		return 'stop'
+	}
+	elseif($cmd -eq 'restart')
+	{
+		$msg = "Restarting the script now!!! Please wait..."
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+		Write-Host -ForegroundColor Cyan $msg
+		if($commandmon -ne $null)
+		{
+			$commandmon | Stop-Job
+			Remove-Job -Job $commandmon
+		}
+		return 'restart'
+	}
+	elseif(($cmd -eq "status") -And ($ip -ne $null))
+	{
+		$msg = "Current shift members:`n`t`t$members.`n`nCurrent assignee: $curassignee ."
+		Reply($msg)
+	}
+	else
+	{
+		$msg = "Unknown Command!!!"
+		Write-Host -ForegroundColor Red $msg
+		if($ip -ne $null)
+		{
+			Reply($msg)
+		}
+	}
+}
+
+
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+#		Update shift members	+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function UpdateMembers($sft)
+{
+	$hour = Get-Date -Format HH
+	$hour = [int]$hour
+#	$mems = [System.Collections.ArrayList]@()
+	Write-Host -ForegroundColor Magenta "Updating Shift members!!!"
+	$dt = (get-date).day
+	$mon = (Get-date).ToString("MMMM")
+	$dow = (Get-date).ToString("ddd")
+	if($sft -eq "N" -And $hour -lt 6)
+	{
+		$dt = (get-date).AddDays(-1).day
+		$mon = (Get-date).AddDays(-1).ToString("MMMM")
+		$dow = (Get-date).AddDays(-1).ToString("ddd")
+	}
+	
+	iwr -Uri "$roster/$mon.xlsx" -Method GET -UseDefaultCredentials -OutFile "$pwd\cache\$mon.xlsx"
+	
+	$objExcel = New-Object -ComObject Excel.Application
+	$file = $objExcel.Workbooks.Open("$pwd\cache\$mon.xlsx")
+	$sheet = $file.sheets.item(1)
+	
+	$ran = $sheet.Range("B1:AH1")
+	$daycol = $ran.find($dt,[Type]::Missing,[Type]::Missing,1).Address($false,$false)
+	
+	$ran=$sheet.Range($daycol).EntireColumn
+	$Target = $ran.Find($sft)
+	$First = $Target
+	Do
+	{
+		if($Target.Text -eq $sft)
+		{
+# Scope for multiple group depending upon job level	
+			$tname = $sheet.Columns.Item(1).Rows.Item($Target.row).Text
+			if($debug -gt 1) { $tdebdata+= "$tname," }
+			$asgn = $tname.split(" ")[0].Trim()
+			if($m_exceptions -contains $asgn){ $null }
+			else{
+				[void]$members.Add($asgn)
+			}
+		}
+		$Target = $ran.FindNext($Target)
+	}
+	While ($Target -ne $NULL -and $Target.AddressLocal() -ne $First.AddressLocal())
+	if($debug -gt 1)
+	{
+		Add-Content "$pwd\cache\debug_$debug.txt" "Update Members:: Unfiltered names: $tdebdata"
+		$tdebdata = $null
+	}
+	$file.Close($true)
+	$objExcel.Quit()
+	rm -Force "$pwd\cache\$mon.xlsx"
+	$members.Sort()
+	Write-Host "Current shift Members:"
+	foreach($mem in $members){ Write-Host -NoNewline -ForegroundColor Yellow "$mem " }
+	Write-Host
+}
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+# Main function Loop	+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+function MainLoop()
+{
+#Initialize variables and files
+	$tshift = "Na"
+	$count = 0
+	$first = 1
+	$members=[System.Collections.ArrayList]@()
+	$trusted=[System.Collections.ArrayList]@()
+	$curassignee = ""
+	$myip = ((ipconfig) -match 'IPv4').split(':')[1].trim()
+	$disloop = 1
+#Check for open ports, close them, start background job		----------------------------
+	$open = netstat -ano | findstr :2020
+	if($open -ne $null)
+	{
+		$open = $open -replace "\s+"," "
+		kill $open.Split(" ")[-1]
+	}
+	$commandmon = Start-Job -ScriptBlock {
+		$socket = New-Object System.Net.Sockets.UdpClient 2020
+		$endpoint = New-Object System.Net.IPEndPoint ([IPAddress]::Any, 2020)
+		while($true)
+		{
+			$content = $socket.Receive([ref]$endpoint)
+			$sender = $endpoint.Address.ToString()
+			$msg=[Text.Encoding]::ASCII.GetString($content)
+			echo "$sender|$msg"
+		}
+	}
+	$m_exceptions = iwr -Uri "$pwd/member_exceptions.txt" -Method GET -UseDefaultCredentials
+	If(![System.IO.File]::Exists("$pwd\Ticket_log.txt"))
+	{
+		New-Item -path $pwd -name "Ticket_log.txt" -type "file" | Out-Null
+	}
+#-----------------------------------
+#Check/Update server data and get lastmem accordingly
+	$rstatus = irm -Uri "$domain/status.txt" -Method GET -UseDefaultCredentials
+	$curtime = [int64](([datetime]::UtcNow)-(get-date "1/1/1970")).TotalSeconds
+	$rtime = [int64]($rstatus.split('|')[1])
+	if($rstatus -ne $null -And ($curtime-$rtime) -lt 400) { $rlstmem = $rstatus.split('|')[2] }
+	iwr -Uri "$domain/status.txt" -Method PUT -Body "$uname|$curtime|$rlstmem|$myip" -ContentType "application/text" -UseDefaultCredentials | Out-Null
+#------------------------------------------------
+#Beginning infinite loop
+	while($true)
+	{
+		sleep 3
+		$count++
+		if($count -gt 50){ $count = 1 }
+#Monitor Commands function
+		$cmdres = MonitorCommands
+#--------------------------------------
+#Monitor remote command function
+		if($commandmon -ne $null)
+		{
+			$com = Receive-Job -Job $commandmon
+			if($debug -gt 0 -And $com -ne $null) { Add-Content "$pwd\cache\debug_$debug.txt" "Remote::Received: $com" }
+			if($com -ne $null)
+			{
+				$cmdres = RemoteMon($com)
+			}
+		}
+		if($cmdres -eq 'stop' -Or $cmdres -eq 'restart') { return $cmdres }
+#--------------------------------------
+#Main dispatcher loop to initiate ticket dispatch process
+		if($count -eq $disloop)
+		{
+#Check if overridden
+			$curtime = [int64](([datetime]::UtcNow)-(get-date "1/1/1970")).TotalSeconds
+			$rstatus = irm -Uri "$domain/status.txt" -Method GET -UseDefaultCredentials
+			if($rstatus.split('|')[0].Length -ne 0)
+			{
+				$rname = $rstatus.split('|')[0]
+				if($rname -ne $uname)
+				{
+					Write-Host -ForegroundColor Red "Sorry! You have been overridden by $rname. Dispatching will be paused now!!!"
+					$disloop = 51
+					continue
+				}
+			}
+#----------------------------------------
+#Get current shift
+			$hour = Get-Date -Format HH
+			$hour = [int]$hour
+			if($hour -gt 13 -And $hour -lt 22)
+			{
+				
+				$shift = "A"
+			}
+			elseif($hour -gt 5 -And $hour -lt 14)
+			{
+				$shift = "M"
+			}
+			else
+			{
+				$shift = "N"
+			}
+#---------------------------------------
+#Check if shift changed
+			if($tshift -ne $shift)
+			{
+				$id = 0
+				$members.Clear()
+				$tichistcnam.Clear()
+				$tichistanam.Clear()
+				Write-Host -ForegroundColor Cyan "`n`n================================================================================================================"
+				Write-Host -NoNewline "`t`t`t`t`tCurrent shift : "
+				if($shift -eq "M") { Write-Host -ForegroundColor Green "Morning Shift`n" }
+				elseif($shift -eq "A") { Write-Host -ForegroundColor Green "Afternoon Shift" }
+				elseif($shift -eq "N") { Write-Host -ForegroundColor Green "Night Shift" }
+				Write-Host -ForegroundColor Cyan "`n================================================================================================================`n`n"
+				UpdateMembers -sft $shift		#		Updating shift Members!!!
+				$curassignee = $members[$id]
+				if($debug -gt 0)
+				{
+					foreach($i in $members) { $tdebdata+="$i," }
+					Add-Content "$pwd\cache\debug_$debug.txt" "Mainloop:: After shift update members: $tdebdata"
+					$tdebdata = $null
+				}
+			}
+			$tshift=$shift
+#----------------------------------------
+#Skipping First round
+			if($first -eq 1)
+			{
+				Write-Host -ForegroundColor Yellow "Skipping First round!!! Dispatching will start from next round alphabetically.Auto refresh interval: ~3 mins"
+				if($rlstmem -ne $null -And $members.Contains($rlstmem))
+				{
+					$curassignee = $rlstmem
+					Write-Host -ForegroundColor Magenta -NoNewline "Last assignee fetched from pervious dispatcher:"
+					Write-Host -ForegroundColor Green $curassignee
+				}
+				$first = 0
+				continue
+			}
+#----------------------------------------
+			
+			$t_exceptions = Get-Content "$pwd\ticket_exceptions.txt"
+			$tlist = @(Get_Unassigned)
+			$time = Get-Date -Format HH:mm
+			$myip = ((ipconfig) -match 'IPv4').split(':')[1].trim()
+			if($tlist.Count -eq 0){
+				Write-Host -NoNewline "No tickets||$time.Refresh ~3 mins.`r"
+				iwr -Uri "$domain/status.txt" -Method PUT -Body "$uname|$curtime|$curassignee|$myip" -ContentType "application/text" -UseDefaultCredentials | Out-Null
+				continue
+			}
+			ProcessTickets -tickets $tlist
+			Write-Host -NoNewline "All tickets assigned!!!`r"
+			iwr -Uri "$domain/status.txt" -Method PUT -Body "$uname|$curtime|$curassignee|$myip" -ContentType "application/text" -UseDefaultCredentials | Out-Null
+		}
+	}
+}
+			
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+$cmdres = MainLoop
+return $cmdres
