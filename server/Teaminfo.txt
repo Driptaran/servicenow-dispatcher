@@ -1,0 +1,3 @@
+{
+"TeamA": {"dispatcher":"https://address.of.server.of dispatcher/TeamA/initiator.txt"}
+}
