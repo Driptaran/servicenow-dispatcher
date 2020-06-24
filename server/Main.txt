@@ -57,7 +57,7 @@ function assign($tid,$aname,$typ)
 		}
 #------------
 #Query and assign ticket
-		$tdata = iwr -Uri "https://ticket.na.xom.com/api/$type/$tid" -Method GET -UseDefaultCredentials
+		$tdata = iwr -Uri "https://$tktapi$type/$tid" -Method GET -UseDefaultCredentials
 		$cont = $tdata | ConvertFrom-Json
 		if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "In assign:: Before filter: $groups, $tmp" }
 		if ($tdata.StatusCode -eq 200 -And ($groups -contains $cont.$atype.Group_ID))
@@ -66,7 +66,7 @@ function assign($tid,$aname,$typ)
 			if($debug -gt 0) { Add-Content "$pwd\cache\debug_$debug.txt" "Going to assign:: Ticket: $tid,Type: $type,Assignee: $aname,Group: $gid." }
 			if($type -eq "change"){ $param = "{`"Coordinator`": `"$aid`",`"Coordinator_Group`": `"$gid`"}" }
 			else{ $param = "{`"Assignee`": `"$aid`",`"Assignee_Group`": `"$gid`"}" }
-			$res = iwr -Uri "https://ticket.na.xom.com/api/$type/$tid/reassign" -Method PUT -Body $param -ContentType "application/json" -UseDefaultCredentials
+			$res = iwr -Uri "$tktapi$type/$tid/reassign" -Method PUT -Body $param -ContentType "application/json" -UseDefaultCredentials
 			if($debug -gt 1) { Add-Content "$pwd\cache\debug_$debug.txt" "Assign response data: $res" }
 #----------------------
 #If success, Give message and send mail
