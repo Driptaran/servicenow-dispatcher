@@ -1,5 +1,5 @@
 #	Configuration script
-#	Version: 1.3
+#	Version: 1.4
 
 $team=Get-Content "$pwd\cache\team.txt"
 
@@ -49,6 +49,7 @@ If(![System.IO.File]::Exists("$pwd\cache\first"))
 #====================================================================
 
 #	Updates	=======================================================
+
 $ver = iwr -Uri "$domain/version.txt" -Method GET -UseDefaultCredentials
 $ver= $ver.Content
 $lver = Get-Content "$pwd\cache\version"
@@ -66,18 +67,17 @@ if($ver -ne $lver)
 
 #		Check current status	========================================================
 
-$total_mem = irm -Uri "$domain/member_list.data" -Method GET -UseDefaultCredentials
+$total_mem = irm -Uri "$domain/member_list.txt" -Method GET -UseDefaultCredentials
 $id = whoami
 $id = $id -replace('\\','\\')
 $name = ($total_mem.psobject.properties | where {$_.value.lanid -eq $id }).name
 $curtime = [int64](([datetime]::UtcNow)-(get-date "1/1/1970")).TotalSeconds
-$rstatus = iwr -Uri "$domain/status.txt" -Method GET -UseDefaultCredentials
-$rstatus = $rstatus.Content
-if($rstatus.split('|')[0] -ne $null -And $rstatus.split('|')[0] -ne $name)
+$rstatus = irm -Uri "$domain/status.txt" -Method GET -UseDefaultCredentials
+if($rstatus.dispatcher -ne $null -And $rstatus.dispatcher -ne $name)
 {
-	$rname = $rstatus.split('|')[0]
-	$rtime = [int64]($rstatus.split('|')[1])
-	if(($curtime-$rtime) -lt 600)
+	$rname = $rstatus.dispatcher
+	$rtime = [int64]($rstatus.time)
+	if(($curtime-$rtime) -lt 700)
 	{
 		Write-Host -ForeGroundColor Magenta -NoNewLine "The script is currently being run by "
 		Write-Host -ForeGroundColor Green $rname
@@ -106,7 +106,7 @@ if($name -eq $null)
 if((Get-Content "$pwd\cache\status") -eq 'stop' -And $mode -ne 'silent')
 {
 	Clear-Content "$pwd\cache\status"
-	$tmp = irm -Uri "$domain/member_list.data" -Method GET -UseDefaultCredentials
+	$tmp = irm -Uri "$domain/member_list.txt" -Method GET -UseDefaultCredentials
 	$tmail = $tmp.Team.Email
 	sendMail -id $tmail -sub 'Script Alert' -body "Hi all,`nI have started the dispatcher script!"
 }

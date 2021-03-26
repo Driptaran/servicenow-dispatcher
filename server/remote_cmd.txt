@@ -8,7 +8,7 @@ Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t`t"
 Write-Host -NoNewline -ForegroundColor Green "Author: Driptaran`t`t`t`t`t`t"
 Write-Host -ForegroundColor Magenta "*"
 Write-Host -NoNewline -ForegroundColor Magenta "*`t`t`t`t`t`t"
-Write-Host -NoNewline -ForegroundColor Cyan "Version : P1.3`t`t`t`t`t`t`t"
+Write-Host -NoNewline -ForegroundColor Cyan "Version : P1.4`t`t`t`t`t`t`t"
 Write-Host -ForegroundColor Magenta "*"
 Write-Host -ForegroundColor Magenta "*****************************************************************************************************************"
 Write-Host -ForegroundColor Yellow "`nType #help to get a list of all the commands anytime...`n`n`t`t"
@@ -18,7 +18,7 @@ Write-Host -ForegroundColor Yellow "`nType #help to get a list of all the comman
 $team=Get-Content "$pwd\cache\team.txt"
 $domain = "https://location.of.server.dispatcher.files/$team"
 
-$total_mem = irm -Uri "$domain/member_list.data" -Method GET -UseDefaultCredentials
+$total_mem = irm -Uri "$domain/member_list.txt" -Method GET -UseDefaultCredentials
 $id = whoami
 $id = $id -replace('\\','\\')
 $name = ($total_mem.psobject.properties | where {$_.value.lanid -eq $id }).name
@@ -29,12 +29,12 @@ Write-Host -NoNewline "User detected: "
 Write-Host -ForegroundColor Green $name
 
 $rstatus = irm -Uri "$domain/status.txt" -Method GET -UseDefaultCredentials
-$dname = $rstatus.split('|')[0]
-$dip = $rstatus.split('|')[3]
+$dname = $rstatus.dispatcher
+$dip = $rstatus.ip
 If($dname -ne $null)
 {
 	$curtime = [int64](([datetime]::UtcNow)-(get-date "1/1/1970")).TotalSeconds
-	$rtime = [int64]($rstatus.split('|')[1])
+	$rtime = [int64]($rstatus.time)
 	if(($curtime-$rtime) -gt 600)
 	{
 		Write-Host -ForegroundColor Yellow "Sorry!!! Nobody is running the script."
